@@ -1,0 +1,58 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "prefix": {
+      "value": "scena"
+    },
+    "location": {
+      "value": "eastus2"
+    },
+    "secondaryLocation": {
+      "value": "eastus",
+      "metadata": {
+        "note": "Must be the paired Azure region for your Power Platform environment. Run Get-EnvironmentRegion to confirm. US pair: eastus/westus. UK pair: uksouth/ukwest. Canada: canadacentral/canadaeast."
+      }
+    },
+    "databricksSku": {
+      "value": "premium"
+    },
+    "workspacePublicNetworkAccess": {
+      "value": "Enabled",
+      "metadata": {
+        "note": "Set Enabled for POC (no jumpbox needed). Set Disabled for production."
+      }
+    },
+    "ppVnetPrimaryAddressPrefix": {
+      "value": "10.202.0.0/16"
+    },
+    "ppSubnetPrimaryPrefix": {
+      "value": "10.202.1.0/24"
+    },
+    "ppVnetSecondaryAddressPrefix": {
+      "value": "10.203.0.0/16"
+    },
+    "ppSubnetSecondaryPrefix": {
+      "value": "10.203.1.0/24"
+    },
+    "adbVnetAddressPrefix": {
+      "value": "10.204.0.0/16"
+    },
+    "adbHostSubnetPrefix": {
+      "value": "10.204.10.0/24"
+    },
+    "adbContainerSubnetPrefix": {
+      "value": "10.204.11.0/24"
+    },
+    "peSubnetPrefix": {
+      "value": "10.204.12.0/24"
+    },
+    "tags": {
+      "value": {
+        "project": "powerapps-databricks",
+        "pattern": "scenario-a",
+        "environment": "poc"
+      }
+    }
+  }
+}

@@ -265,6 +265,8 @@ Navigate(ListScreen)
 | Unity Catalog RLS via `SESSION_USER()` | Databricks | Cannot be bypassed from any client | **Yes** (OAuth only) |
 | Power Apps `WHERE` / `Filter()` | Power Apps formula | Direct warehouse access bypasses it | No (SP) |
 
+> **Note**: Databricks Apps (a separate product from the Power Apps connector) solves this same class of problem natively via [on-behalf-of-user authorization](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/auth) — the app forwards the signed-in user's token instead of using its service principal, so Unity Catalog row filters apply automatically. The Power Apps native connector has no equivalent token-forwarding mechanism, which is why the app-side `User().Email` workaround above is required for SP auth.
+
 #### Step 5 — Create the connection in Power Apps
 
 `make.powerapps.com` → **Connections** → **New connection** → **Databricks** → **Service Principal**:

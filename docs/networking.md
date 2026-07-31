@@ -71,6 +71,12 @@ Required peerings:
 - Hub → ADB Spoke VNet (and reverse)
 - PP-VNet-Primary ↔ PP-VNet-Secondary (cross-region peer — both directions)
 
+> **Critical gap that's easy to miss: the peerings above are NOT enough by themselves for PP-VNet to actually reach the Databricks spoke.** Azure VNet peering is **not transitive** — Hub↔PP-VNet and Hub↔ADB-VNet being fully connected does not let PP-VNet and ADB-VNet route to each other through the hub. We confirmed this directly: with every peering above in place and correctly bidirectional, a TCP connection from a VM in the PP-VNet to the Databricks private endpoint **timed out** (not rejected — no route existed at all). You need ONE of these two, not neither:
+> 1. **A firewall/NVA in the hub, with UDRs on both the PP-VNet and ADB-VNet subnets** routing traffic for the other spoke's CIDR (or `0.0.0.0/0`) to the firewall's private IP — see the Firewall subsection below. This is the standard enterprise pattern when you want inspection of spoke-to-spoke traffic, and matches most real hub-and-spoke deployments.
+> 2. **Direct VNet peering between PP-VNet and the ADB spoke VNet**, bypassing the hub for this traffic entirely. Simpler, no firewall dependency, but skips hub inspection — appropriate for a POC/reference environment or where inspection isn't required for this path. This is what we used to fix our own reference environment (`main.bicep`'s stub-hub mode has no firewall at all, so option 1 isn't available there — see note below).
+>
+> If neither exists yet, ask explicitly whether the hub has a firewall/NVA before assuming reverse peerings alone will make this work — they won't.
+
 The Bicep creates peerings from PP-VNet→Hub and ADB-VNet→Hub, but VNet peering requires **both sides**. The networking team must add these on the Hub side:
 
 ```bash
@@ -120,9 +126,38 @@ az network vnet peering create \
 
 > Cross-region VNet peering incurs bandwidth charges. In practice this traffic is only the failover path — Power Platform secondary region traffic is low-volume until a regional outage occurs.
 
-**If Hub has a Firewall**: add UDR (User Defined Route) on PP-VNet and ADB-VNet subnets routing `0.0.0.0/0` → Firewall private IP. Then add Firewall rules to allow:
+### Option 1 — Hub firewall/NVA + UDRs (standard enterprise pattern, use if the hub has a firewall)
+
+Add UDR (User Defined Route) on the PP-VNet and ADB-VNet subnets routing `0.0.0.0/0` (or the specific peer CIDR) → Firewall private IP. Then add Firewall rules to allow:
 - PP-VNet → Databricks private endpoint IP: TCP 443
 - Databricks control plane → Databricks private endpoint: TCP 443, 8443-8451
+
+### Option 2 — Direct PP-VNet ↔ ADB-VNet peering (simpler, no hub inspection of this traffic; use for POC/reference environments or when the hub has no firewall)
+
+```bash
+# Run once per PP-VNet (primary and secondary) that needs to reach the ADB spoke.
+# Cross-resource-group peering needs FULL resource IDs for --remote-vnet, not short
+# names — az CLI resolves short names relative to --resource-group and will silently
+# fail to find them if the two VNets are in different resource groups.
+
+az network vnet peering create \
+  --name peer-ppvnet-to-adbvnet \
+  --resource-group <pp-vnet-rg> \
+  --vnet-name <pp-vnet-name> \
+  --remote-vnet <adb-vnet-full-resource-id> \
+  --allow-vnet-access true --allow-forwarded-traffic true
+
+az network vnet peering create \
+  --name peer-adbvnet-to-ppvnet \
+  --resource-group <adb-vnet-rg> \
+  --vnet-name <adb-vnet-name> \
+  --remote-vnet <pp-vnet-full-resource-id> \
+  --allow-vnet-access true --allow-forwarded-traffic true
+```
+
+> On Windows with Git Bash specifically: MSYS path conversion can mangle a resource ID starting with `/subscriptions/...` into something like `C:/Program Files/Git/subscriptions/...`, causing a confusing "resource not found" error even though the ID is correct. If that happens, prefix the command with `MSYS_NO_PATHCONV=1`.
+
+> **`main.bicep`'s stub-hub mode (no `-HubVNetId` supplied) never creates Option 1** — the stub hub is a bare VNet with no firewall — so PP-VNet cannot reach the ADB spoke at all in that mode unless you add Option 2 peering manually. This is easy to miss because the deployment succeeds and every individual peering shows `Connected` — the gap only shows up as a TCP timeout when you actually test connectivity end-to-end.
 
 ---
 
@@ -152,23 +187,43 @@ This binds the deployed PP-VNet subnets to the Power Platform Managed Environmen
 
 > **Reference**: https://learn.microsoft.com/en-us/power-platform/admin/vnet-support-setup-configure
 
+### Prerequisites — check these BEFORE starting (each one blocked us in testing)
+
+- **Environment type must be Production or Sandbox — never Developer or Trial.** Developer (Personal Developer Environment) **cannot become a Managed Environment**, full stop — there is no toggle, workaround, or wait that fixes this. `Enable-SubnetInjection` will fail with a `NotFound` error against a Developer environment because the link endpoint doesn't exist for that environment type. Check with:
+  ```powershell
+  Get-AdminPowerAppEnvironment -EnvironmentName "<environment-id>" | Select-Object DisplayName, EnvironmentType
+  ```
+- **Managed Environments must be turned on** for the target environment (Power Platform Admin Center → the environment → enable Managed Environment) — this is itself a prerequisite for attaching any Enterprise Policy, separate from creating the policy resource in Azure. Turning it on requires the environment's users to have premium licensing (a custom connector like this one already requires premium regardless).
+- **The environment needs an actual Dataverse database with available capacity.** Creating a new Production environment with `-ProvisionDatabase` will fail with `InsufficientCapacity_StorageDriven` if the tenant has 0 GB of Dataverse storage capacity allocated — this is a separate entitlement from per-user Premium licenses and is common in internal/sandbox tenants that aren't provisioned for Power Platform workloads. Check **Power Platform Admin Center → Resources → Capacity** before assuming an environment can be made Managed.
+- **Both `Microsoft.PowerPlatform` and `Microsoft.Network` resource providers must be registered** on the Azure subscription (Step 0 below) — without this, the PPAC "New Policy" UI wizard silently produces an empty "select policy" list with no clear error, which looks like a permissions problem but isn't.
+
 ---
 
-### Step 0 — Register the resource provider (one-time per subscription)
+### Step 0 — Register the resource providers (one-time per subscription)
 
 ```powershell
+# Az PowerShell
 Register-AzResourceProvider -ProviderNamespace 'Microsoft.PowerPlatform'
+Register-AzResourceProvider -ProviderNamespace 'Microsoft.Network'
 
 # Wait until RegistrationState = Registered (takes ~1-2 min)
-Get-AzResourceProvider -ProviderNamespace 'Microsoft.PowerPlatform' |
-    Select-Object RegistrationState
+Get-AzResourceProvider -ProviderNamespace 'Microsoft.PowerPlatform' | Select-Object RegistrationState
+Get-AzResourceProvider -ProviderNamespace 'Microsoft.Network' | Select-Object RegistrationState
+```
+
+```bash
+# Azure CLI equivalent
+az provider register --namespace Microsoft.PowerPlatform
+az provider register --namespace Microsoft.Network
+az provider show --namespace Microsoft.PowerPlatform --query registrationState -o tsv
 ```
 
 > **Access required**: Contributor or Owner on the Azure subscription. In enterprise environments this is typically owned by the CloudX team — raise a request if you don't have access.
+> `Microsoft.Network` is usually already registered (creating any VNet requires it), but confirm rather than assume — an unregistered `Microsoft.PowerPlatform` provider was the actual root cause the one time we hit an empty "select policy" dropdown in PPAC, and it gave no direct error pointing at the provider.
 
 ---
 
-### Option A: PowerShell module (recommended for automation / scripted deployments)
+### Option A: PowerShell module (recommended — Option B's UI wizard depends on the same provider registration but fails less clearly when it's missing)
 
 ```powershell
 # Step 1 — Install the Enterprise Policies module
@@ -188,31 +243,45 @@ New-VnetForSubnetDelegation `
 
 # Step 3 — Create the Enterprise Policy resource
 # (Microsoft.PowerPlatform/enterprisePolicies in your subscription)
-# The module's New-EnterprisePolicy cmdlet creates this — run:
-#   Get-Command -Module Microsoft.PowerPlatform.EnterprisePolicies
-# for the full command list after installing the module.
+# Two-region geography (the normal case — matches primary + secondary PP-VNet):
+New-SubnetInjectionEnterprisePolicy `
+  -SubscriptionId "<subscription-id>" `
+  -ResourceGroupName "<deployment-rg>" `
+  -PolicyName "<policy-name>" `
+  -PolicyLocation "unitedstates" ` # geography name, NOT an Azure region — see supported values in the MS Learn reference above
+  -VirtualNetworkId "/subscriptions/<sub-id>/resourceGroups/<rg>/providers/Microsoft.Network/virtualNetworks/adbpa-pp-vnet-primary" `
+  -SubnetName "snet-pp-primary" `
+  -VirtualNetworkId2 "/subscriptions/<sub-id>/resourceGroups/<rg>/providers/Microsoft.Network/virtualNetworks/adbpa-pp-vnet-secondary" `
+  -SubnetName2 "snet-pp-secondary"
+
+# -PolicyLocation must match the ACTUAL region pair of the two VNets above, per the
+# table in the "Operational constraints" section below — the cmdlet validates this
+# itself and throws a clear error naming the supported pairs if they don't match.
 
 # Step 4 — Link the policy to your Power Platform environment
 Enable-SubnetInjection `
   -EnvironmentId "<power-platform-environment-id>" `
   -PolicyArmId "/subscriptions/<sub-id>/resourceGroups/<rg>/providers/Microsoft.PowerPlatform/enterprisePolicies/<policyName>"
+
+# If this returns a NotFound error on
+#   .../enterprisePolicies/NetworkInjection/link
+# first re-check the Prerequisites above — in practice this has meant either the
+# wrong environment ID (verify with Get-AdminPowerAppEnvironment, not a copy-pasted
+# PPAC URL fragment) or an environment that's Developer-type and can't be Managed.
 ```
 
-> Get your environment ID from Power Platform Admin Center: **Environments** → select environment → copy the ID from the URL (format: `00000000-0000-0000-0000-000000000000`).
+> Get the canonical environment ID with `Get-AdminPowerAppEnvironment | Select-Object DisplayName, EnvironmentName` (from the `Microsoft.PowerApps.Administration.PowerShell` module) rather than trusting a copy from the PPAC URL — `EnvironmentName` in that output is the actual GUID the cmdlets expect.
 
 ---
 
 ### Option B: Admin Center UI
 
 1. Go to [Power Platform Admin Center](https://admin.powerplatform.microsoft.com)
-2. **Policies** → **Enterprise Policies** → **New Policy**
-3. **Policy type**: `Network`
-4. Select your **Managed Environment**
-5. **Subscription**: select your Azure subscription
-6. **Virtual Network**: select `adbpa-pp-vnet` (from deployment output)
-7. **Primary subnet**: `snet-pp-primary`
-8. **Secondary subnet**: `snet-pp-secondary`
-9. Save and wait for policy to apply (~5-10 minutes)
+2. **Security** → **Data and privacy** → **Azure Virtual Network policies**
+3. Select the environment — if it warns **"Turn on Managed Environments"**, see Prerequisites above; you cannot proceed past this until the environment is Managed
+4. Select the policy (created via Option A, or via a custom ARM template deployment — see the manual/ARM-template pivot in the [MS Learn reference](https://learn.microsoft.com/en-us/power-platform/admin/vnet-support-setup-configure?pivots=manual) if you want to avoid PowerShell entirely) and **Save**
+
+> **If the policy list is empty here with nothing to select**, this is very likely the `Microsoft.PowerPlatform` resource provider not being registered (Step 0) rather than a permissions issue — the UI gives no direct error pointing at this.
 
 ---
 
@@ -230,7 +299,7 @@ Get-SubnetInjectionStatus -EnvironmentId "<environment-id>"
 - **Cannot change subnet CIDR after delegation**: if you need to resize, remove the delegation, resize, then re-enable. Plan subnet sizing before enabling.
 - **Cannot change VNet DNS after delegation**: same process — remove, change DNS, re-enable.
 - **Subnet sizing**: production environments use 25–30 IPs; dev/sandbox 6–10. If multiple environments share one Enterprise Policy, size accordingly: `(N × IPs per env) + 5 reserved`.
-- **Secondary subnet region**: the primary and secondary subnets must be in the **two different Azure regions** of the Power Platform region pair — not the same region. Run `Get-EnvironmentRegion` to confirm the correct pair before creating subnets.
+- **Secondary subnet region**: the primary and secondary subnets must be in the **two different Azure regions** of the Power Platform region pair — not the same region. For `unitedstates`, `New-SubnetInjectionEnterprisePolicy` only accepts `eastus|westus` or `centralus|eastus2` — **eastus2 does not pair with eastus**, confirmed directly from the cmdlet's validation error. Run `Get-EnvironmentRegion` to confirm the correct pair before creating subnets.
 - **Internet-bound calls**: after delegation, public internet calls from connectors still work by default. Attach an [Azure NAT gateway](https://learn.microsoft.com/en-us/azure/nat-gateway/nat-overview) to the delegated subnet so outbound public traffic is logged, controlled, and exits from a known IP range. Without it, public egress uses random Azure fabric IPs.
 
 ---

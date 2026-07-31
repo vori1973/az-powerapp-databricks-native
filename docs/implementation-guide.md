@@ -14,11 +14,13 @@ A Power Platform **environment is single-region**. You need **one environment an
 
 | Power Platform region | Primary Azure region | Secondary Azure region |
 |-----------------------|---------------------|----------------------|
-| United States | eastus | westus |
+| United States | eastus **or** centralus | westus (pairs with eastus) **or** eastus2 (pairs with centralus) |
 | UK | uksouth | ukwest |
 | Canada | canadacentral | canadaeast |
 | Europe | westeurope | northeurope |
 | Australia | australiaeast | australiasoutheast |
+
+> **United States has two valid pairs, not one**: `eastus↔westus` or `centralus↔eastus2`. Confirmed directly from `New-SubnetInjectionEnterprisePolicy`'s own validation error — `eastus2` does **not** pair with `eastus`, which is an easy mistake since eastus2 is the more commonly used region elsewhere in this project's examples. Always confirm with `Get-EnvironmentRegion` rather than assuming.
 
 > **Customer design note**: the diagram in [README §2](../README.md#2-current-proposed-architecture-customer) labels both subnets as "East US 2". Before configuring the Enterprise Policy, run `Get-EnvironmentRegion` (from the [subnet diagnostics module](https://learn.microsoft.com/en-us/troubleshoot/power-platform/administration/virtual-network#use-the-diagnostics-powershell-module)) to confirm the exact Azure region the environment landed in, then place the secondary subnet in the correct paired region.
 
@@ -31,9 +33,13 @@ Get-EnvironmentRegion -EnvironmentId "<your-environment-id>"
 
 ### How Enterprise Policy binds the subnets
 
-`Microsoft.PowerPlatform/enterprisePolicies` is an Azure ARM resource you deploy in your subscription. It references one delegated subnet per region (primary + secondary). You then link that resource to a Power Platform Managed Environment in PPAC — this is what enables **subnet injection**: all outbound connector traffic from the environment routes through those subnets (primary active, secondary failover) instead of Power Platform's shared public egress.
+`Microsoft.PowerPlatform/enterprisePolicies` is an Azure ARM resource you deploy in your subscription. It references one delegated subnet per region (primary + secondary). You then link that resource to a Power Platform **Managed Environment** in PPAC — this is what enables **subnet injection**: all outbound connector traffic from the environment routes through those subnets (primary active, secondary failover) instead of Power Platform's shared public egress.
 
-Full step-by-step (PowerShell module + UI): [`networking.md §4 — Power Platform Enterprise Policy`](networking.md#4-power-platform-enterprise-policy)
+> **Without this link, the connector always uses Power Platform's shared public infrastructure** — regardless of how correctly the Azure-side private endpoint, DNS, and peering are configured. A delegated subnet existing is not the same as an Enterprise Policy existing and being linked; confirm both, not just the subnet.
+
+> **Environment type is a hard prerequisite, not a formality**: the target environment must be **Production or Sandbox**. **Developer/Trial environments can never become Managed Environments** — there is no setting or wait time that changes this, and `Enable-SubnetInjection` fails with a `NotFound` error against one. Check with `Get-AdminPowerAppEnvironment -EnvironmentName "<id>" | Select-Object EnvironmentType` before doing anything else in this section. Provisioning a new Production environment additionally requires tenant Dataverse database capacity (PPAC → Resources → Capacity) — a separate entitlement from per-user Premium licensing that can be 0 GB even on a fully-licensed tenant.
+
+Full step-by-step (PowerShell module + UI), including the resource-provider registration and Managed Environment prerequisites: [`networking.md §4 — Power Platform Enterprise Policy`](networking.md#4-power-platform-enterprise-policy)
 
 Microsoft reference: https://learn.microsoft.com/en-us/power-platform/admin/vnet-support-overview
 
@@ -287,7 +293,7 @@ Navigate(ListScreen)
 |-------------|----------------------------|
 | Power Apps → Databricks connectivity | Native connector — no additional Azure services |
 | No public internet | VNet injection (Enterprise Policy) routes connector traffic privately through hub-spoke |
-| All traffic via enterprise hub / firewall | PP-VNet → Hub peering — existing design, no change |
+| All traffic via enterprise hub / firewall | PP-VNet → Hub peering — existing design, no change, **but confirm the hub actually has a firewall/NVA with UDRs routing spoke-to-spoke traffic; hub peering alone is not transitive and won't route PP-VNet → ADB spoke by itself (see gap #5 below)** |
 | Serverless SQL Warehouse | Supported — NCC required (see below) |
 | Unity Catalog + row-level security | `current_user()` returns the actual user UPN — simpler than MSI path |
 | Entra ID auth, no shared credentials | Delegated OAuth — user's own session, nothing stored |
@@ -303,6 +309,8 @@ Navigate(ListScreen)
 - Hub-spoke VNet with peering
 - Databricks workspace behind Private Endpoint (`privatelink.azuredatabricks.net`)
 - DNS zone for `privatelink.azuredatabricks.net`
+
+> **Verify this list against reality before assuming it, especially the first line.** Delegated subnets existing is not proof the `Microsoft.PowerPlatform/enterprisePolicies` resource itself was created and actually linked to the environment — those are three separate, independently-failable steps (see [Enterprise Policy prerequisites above](#how-enterprise-policy-binds-the-subnets)). Likewise "Hub-spoke VNet with peering" should be verified as *sufficient* peering, not just present — plain hub↔spoke peering is not transitive; PP-VNet needs either a direct path to the Databricks spoke or a hub firewall/NVA with UDRs on both spokes (see [`networking.md §2`](networking.md#2-hub-vnet-reverse-peerings-and-cross-region-pp-vnet-peering)). We hit both gaps in our own reference environment despite subnets and hub peering both being present.
 
 ---
 
@@ -493,6 +501,12 @@ Once moved, all Power Apps in the environment can use the connector without indi
 ### 5. Hub VNet Reverse Peerings `HIGH`
 
 The PP-VNet peers to Hub, but the Hub must also peer back to PP-VNet for return traffic to route correctly. This is a standard hub-spoke networking step that is typically owned by the networking team.
+
+**This is necessary but not sufficient.** Even with every reverse peering in place (Hub↔PP-VNet, Hub↔ADB spoke, both directions), **PP-VNet still cannot reach the ADB spoke** — VNet peering is not transitive, so two spokes peered to the same hub don't automatically route to each other. We confirmed this directly: a TCP connection from inside the PP-VNet to the Databricks private endpoint timed out with all reverse peerings correctly configured and showing `Connected`. You additionally need **one** of:
+- A firewall/NVA in the hub, with UDRs on both the PP-VNet and ADB spoke subnets routing to it (the standard pattern if hub inspection of this traffic is required), or
+- Direct VNet peering between PP-VNet and the ADB spoke (bypasses hub inspection for this path — simpler, appropriate when inspection isn't required here).
+
+Confirm explicitly with the networking team which of the two applies — don't assume reverse peering alone closes this gap. Full detail: [`networking.md §2`](networking.md#2-hub-vnet-reverse-peerings-and-cross-region-pp-vnet-peering).
 
 **Owner**: Networking team.
 

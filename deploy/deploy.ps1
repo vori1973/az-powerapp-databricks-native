@@ -6,6 +6,12 @@
       - PP-VNet Primary  (primary region, delegated subnet for Enterprise Policy)
       - PP-VNet Secondary (paired region, delegated subnet for Enterprise Policy failover)
       - Cross-region VNet peering between the two PP-VNets
+      - Direct PP-VNet<->ADB-VNet peering — ONLY when no -HubVNetId is supplied (stub
+        hub mode). The stub hub has no firewall/NVA, and VNet peering is not transitive,
+        so without this direct peering PP-VNet cannot reach the ADB spoke at all even
+        though every individual hub peering shows Connected. Skipped when a real
+        -HubVNetId is supplied, since that hub may have its own firewall-inspection
+        design — see docs/networking.md §2 for what's needed in that case instead.
       - Databricks spoke VNet + workspace (VNet-injected)
       - All 4 private DNS zones (ADB, ADLS DFS/Blob, Key Vault)
       - Private endpoints (ADB ui_api + browser_auth, ADLS DFS/Blob, Key Vault)
@@ -26,7 +32,10 @@
 .PARAMETER SecondaryLocation
     Paired Azure region for the secondary PP-VNet.
     Run Get-EnvironmentRegion (subnet diagnostics module) to confirm the correct pair.
-    US default: 'eastus' when primary is 'eastus2'. UK: 'ukwest'. Canada: 'canadaeast'.
+    For the unitedstates geography, New-SubnetInjectionEnterprisePolicy only accepts
+    eastus|westus or centralus|eastus2 — eastus2 does NOT pair with eastus (confirmed
+    by the cmdlet's own validation error). Default here is 'centralus', matching the
+    default primary 'eastus2'. UK: 'ukwest'. Canada: 'canadaeast'.
 
 .PARAMETER HubVNetId
     Full resource ID of the existing Hub VNet to peer with.
@@ -54,7 +63,7 @@ param(
 
     [string]$Location = "eastus2",
 
-    [string]$SecondaryLocation = "eastus",
+    [string]$SecondaryLocation = "centralus",
 
     [string]$HubVNetId = "",
 
@@ -125,8 +134,11 @@ Write-Host @"
     Import-Module Microsoft.PowerPlatform.EnterprisePolicies
     Get-EnvironmentRegion -EnvironmentId '<your-environment-id>'
 
-  Power Platform region pairs (reference):
-    United States : eastus  ↔ westus
+  Power Platform region pairs (reference — confirmed via New-SubnetInjectionEnterprisePolicy
+  validation error for the unitedstates geography; other geographies unverified, confirm
+  with Get-EnvironmentRegion):
+    United States : eastus  ↔ westus   OR   centralus ↔ eastus2  (these are the ONLY
+                    two valid pairs — eastus2 does NOT pair with eastus)
     UK            : uksouth ↔ ukwest
     Canada        : canadacentral ↔ canadaeast
     Europe        : westeurope ↔ northeurope
@@ -145,6 +157,13 @@ if (-not $objectId) { Write-Error "Could not get Object ID. Run: az login" }
 Write-Host "    Object ID: $objectId"
 
 # ── Hub VNet ───────────────────────────────────────────────────────────────────
+# Captured before $HubVNetId gets overwritten with the stub hub's ID below — used
+# after deployment to decide whether direct PP-VNet<->ADB-VNet peering is needed.
+# VNet peering is not transitive: the stub hub has no firewall/NVA, so without this
+# direct peering PP-VNet can never reach the ADB spoke, even though every individual
+# peering to the hub shows Connected. This bit us in testing — see docs/networking.md §2.
+$usingStubHub = [string]::IsNullOrEmpty($HubVNetId)
+
 if (-not $HubVNetId) {
     Write-Host "`n[5/8] No Hub VNet supplied — creating stub hub for POC..." -ForegroundColor Yellow
     $stubHubRg   = "$ResourceGroup-hub"
@@ -214,6 +233,8 @@ $ppPrimaryId     = $outputs.ppVnetPrimaryId.value
 $ppPrimaryName   = $outputs.ppVnetPrimaryName.value
 $ppSecondaryId   = $outputs.ppVnetSecondaryId.value
 $ppSecondaryName = $outputs.ppVnetSecondaryName.value
+$adbVnetId       = $outputs.adbVnetId.value
+$adbVnetName     = $outputs.adbVnetName.value
 $storage         = $outputs.storageAccountName.value
 $storageEndpoint = $outputs.storageAccountDfsEndpoint.value
 $kvName          = $outputs.keyVaultName.value
@@ -231,6 +252,46 @@ Write-Host "Storage Account              : $storage"
 Write-Host "Key Vault                    : $kvName"
 Write-Host "Access Connector ID          : $acId"
 Write-Host "UC Storage Root              : $ucStorageRoot"
+
+# ── Stub-hub direct peering ────────────────────────────────────────────────────
+# The stub hub created above has no firewall/NVA. VNet peering is not transitive,
+# so Hub<->PP-VNet and Hub<->ADB-VNet peerings (already created by main.bicep) do
+# NOT let PP-VNet reach the ADB spoke — every individual peering shows Connected
+# but there is no actual route between the two spokes. Confirmed via a TCP timeout
+# in testing; only fixed by direct peering (this) or a real hub firewall + UDRs.
+# Skipped entirely when a real -HubVNetId was supplied, since that may have its own
+# firewall-inspection design that direct peering would bypass — see docs/networking.md §2.
+if ($usingStubHub) {
+    Write-Host "`n=== STUB HUB HAS NO FIREWALL — ADDING DIRECT PEERING ===" -ForegroundColor Yellow
+    Write-Host "    (required for PP-VNet to reach the ADB spoke; see docs/networking.md §2)"
+
+    foreach ($pp in @(
+        @{ Name = $ppPrimaryName;   Id = $ppPrimaryId },
+        @{ Name = $ppSecondaryName; Id = $ppSecondaryId }
+    )) {
+        az network vnet peering create `
+            --name "peer-$($pp.Name)-to-$adbVnetName" `
+            --resource-group $ResourceGroup `
+            --vnet-name $pp.Name `
+            --remote-vnet $adbVnetId `
+            --allow-vnet-access true --allow-forwarded-traffic true `
+            --output none
+        az network vnet peering create `
+            --name "peer-$adbVnetName-to-$($pp.Name)" `
+            --resource-group $ResourceGroup `
+            --vnet-name $adbVnetName `
+            --remote-vnet $pp.Id `
+            --allow-vnet-access true --allow-forwarded-traffic true `
+            --output none
+        Write-Host "    Peered $($pp.Name) <-> $adbVnetName"
+    }
+} else {
+    Write-Host "`nNOTE: real -HubVNetId supplied — direct PP-VNet<->ADB-VNet peering was NOT" -ForegroundColor DarkYellow
+    Write-Host "auto-created. Confirm with the networking team whether the hub has a" -ForegroundColor DarkYellow
+    Write-Host "firewall/NVA with UDRs routing spoke-to-spoke traffic — hub peering alone is" -ForegroundColor DarkYellow
+    Write-Host "NOT transitive and will NOT let PP-VNet reach the ADB spoke by itself." -ForegroundColor DarkYellow
+    Write-Host "See docs/networking.md §2 for both options." -ForegroundColor DarkYellow
+}
 
 Write-Host "`n=== MANUAL STEPS REQUIRED ===" -ForegroundColor Yellow
 Write-Host "(ARM cannot automate these — complete them in order)" -ForegroundColor DarkGray
@@ -257,7 +318,8 @@ Confirm the secondary VNet is in the correct paired region for your PP environme
   Import-Module Microsoft.PowerPlatform.EnterprisePolicies
   Get-EnvironmentRegion -EnvironmentId '<your-pp-environment-id>'
 
-  Expected result for US environments: eastus + westus (or eastus2 + centralus — varies)
+  Expected result for US environments: eastus + westus, OR centralus + eastus2 —
+  these are the ONLY two valid pairs; eastus2 does NOT pair with eastus.
   Current deployment: $Location (primary) + $SecondaryLocation (secondary)
 
   If the secondary is wrong: redeploy with -SecondaryLocation <correct-region>
@@ -280,18 +342,58 @@ Also needed (PP-VNet-Secondary → Hub, run from secondary sub if different):
 
   And the reverse (Hub → PP-VNet-Secondary) from the Hub VNet side.
 
+  IMPORTANT — these hub peerings alone do NOT let PP-VNet reach the ADB spoke.
+  VNet peering is not transitive: Hub<->PP-VNet and Hub<->ADB-VNet both being
+  Connected does not create a route between PP-VNet and ADB-VNet. Confirmed via
+  a TCP timeout in our own testing despite every peering showing Connected. You
+  need ONE of:
+    a. A firewall/NVA in the hub with UDRs on both spokes routing to it, OR
+    b. Direct PP-VNet <-> ADB-VNet peering (bypasses hub inspection for this path)
+  Ask the networking team explicitly which applies before assuming this step
+  alone is sufficient. Full detail: docs/networking.md § 2.
+
 ──────────────────────────────────────────────────────────────
-STEP 4 — POWER PLATFORM ENTERPRISE POLICY [PPAC]
+STEP 4 — POWER PLATFORM ENTERPRISE POLICY [PPAC + PowerShell]
 ──────────────────────────────────────────────────────────────
-  admin.powerplatform.microsoft.com → Policies → Enterprise Policies → New Policy
-  Type: Network
-  Select your Managed Environment
-  Primary VNet  : $ppPrimaryName    Subnet: snet-pp-primary
-  Secondary VNet: $ppSecondaryName  Subnet: snet-pp-secondary
-  Save and wait ~5-10 minutes for Status: Succeeded
+  Before starting, confirm all of these — each one is a hard blocker, not optional:
+    - Target environment type is Production or Sandbox, NEVER Developer/Trial.
+      Developer environments cannot become Managed Environments — no workaround.
+        Get-AdminPowerAppEnvironment -EnvironmentName '<env-id>' |
+          Select-Object DisplayName, EnvironmentType
+    - Managed Environments is turned ON for the target environment (PPAC).
+    - Tenant has available Dataverse database capacity (PPAC → Resources → Capacity)
+      if you need to provision a new environment — this is separate from per-user
+      Premium licensing and can be 0 GB even on fully-licensed tenants.
+    - Microsoft.PowerPlatform AND Microsoft.Network resource providers are
+      registered on this subscription:
+        az provider register --namespace Microsoft.PowerPlatform
+        az provider register --namespace Microsoft.Network
+
+  Then create and link the policy (PowerShell — more reliable than the PPAC UI
+  wizard, which fails silently with an empty policy list if the provider above
+  isn't registered):
+
+    Install-Module Microsoft.PowerPlatform.EnterprisePolicies -Force
+    Import-Module Microsoft.PowerPlatform.EnterprisePolicies
+
+    New-SubnetInjectionEnterprisePolicy ``
+      -SubscriptionId '$($account.id)' ``
+      -ResourceGroupName '$ResourceGroup' ``
+      -PolicyName '${Prefix}-network-policy' ``
+      -PolicyLocation 'unitedstates' `` # confirm geography matches your PP environment
+      -VirtualNetworkId '$ppPrimaryId' ``
+      -SubnetName 'snet-pp-primary' ``
+      -VirtualNetworkId2 '$ppSecondaryId' ``
+      -SubnetName2 'snet-pp-secondary'
+
+    Enable-SubnetInjection ``
+      -EnvironmentId '<your-environment-id>' ``
+      -PolicyArmId '/subscriptions/$($account.id)/resourceGroups/$ResourceGroup/providers/Microsoft.PowerPlatform/enterprisePolicies/${Prefix}-network-policy'
 
   Validate:
     Get-SubnetInjectionStatus -EnvironmentId '<your-environment-id>'
+
+  Full details incl. troubleshooting: docs/networking.md → §4
 
 ──────────────────────────────────────────────────────────────
 STEP 5 — NCC CONFIGURATION [CRITICAL — serverless queries fail without this]

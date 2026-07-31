@@ -32,8 +32,8 @@ param prefix string = 'scena'
 @description('Primary Azure region — PP environment primary region (e.g. eastus2)')
 param location string = 'eastus2'
 
-@description('Secondary Azure region — the paired region for this PP region (e.g. eastus for US pair). Run Get-EnvironmentRegion to confirm.')
-param secondaryLocation string = 'eastus'
+@description('Secondary Azure region — the paired region for this PP region. Enterprise Policy validates this pair; for the unitedstates geography the ONLY supported pairs are eastus|westus and centralus|eastus2 — eastus2 does NOT pair with eastus. Run Get-EnvironmentRegion to confirm which pair applies to your environment.')
+param secondaryLocation string = 'centralus'
 
 @description('Databricks workspace SKU — premium required for Unity Catalog')
 @allowed(['standard', 'premium'])
@@ -661,6 +661,7 @@ output ppVnetSecondaryId         string = ppVnetSecondary.id
 output ppVnetSecondaryName       string = ppVnetSecondary.name
 output ppSubnetSecondaryId       string = '${ppVnetSecondary.id}/subnets/snet-pp-secondary'
 output adbVnetId                 string = adbVnet.id
+output adbVnetName               string = adbVnet.name
 output storageAccountName        string = storageAccount.name
 output storageAccountDfsEndpoint string = storageAccount.properties.primaryEndpoints.dfs
 output keyVaultName              string = keyVault.name

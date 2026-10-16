@@ -307,7 +307,7 @@ The Databricks connector must be in the Business tier before Power Apps can use 
   → Policies → Data policies → [your env policy]
   → Connectors → Databricks → Move to Business data group
 
-No networking work unblocks this — it must be done in PPAC by the CloudX team.
+No networking work unblocks this — it must be done in PPAC by the Security / Power Platform admin team.
 
 ──────────────────────────────────────────────────────────────
 STEP 2 — VERIFY ENVIRONMENT REGION PAIR [required before Step 3]
@@ -586,5 +586,4 @@ Phase 2 — Entra ID delegated (production, enables current_user() RLS):
 Write-Host "`nPortal: https://portal.azure.com/#resource/subscriptions/$($account.id)/resourceGroups/$ResourceGroup" -ForegroundColor Cyan
 Write-Host "Databricks: $adbUrl" -ForegroundColor Cyan
 Write-Host "`nDocs: docs/implementation-guide.md" -ForegroundColor DarkGray
-
 

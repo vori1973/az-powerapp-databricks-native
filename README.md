@@ -80,7 +80,7 @@ The deploy script prints these steps in full. This is the sequence:
 
 | Step | What | Who |
 |------|------|-----|
-| 1 | Confirm Databricks connector is in Business DLP tier in PPAC | Security / CloudX |
+| 1 | Confirm Databricks connector is in Business DLP tier in PPAC | Security / Power Platform admin |
 | 2 | Verify PP environment region pair | You |
 | 3 | Hub VNet reverse peerings | Networking team |
 | 4 | Power Platform Enterprise Policy — bind subnets to Managed Environment | PPAC admin |

@@ -68,8 +68,8 @@ Both approvals are needed for Scenario A — from two different teams:
 
 | Gate | System | Team | Status |
 |------|--------|------|--------|
-| `Microsoft.Databricks/accessConnectors` resource type | Azure Policy | Platform / CloudX | ✅ Confirmed |
-| Databricks connector in Business DLP tier | Power Platform Admin Center | Security / CloudX | 🟡 Assumed — verify in PPAC before POC |
+| `Microsoft.Databricks/accessConnectors` resource type | Azure Policy | Platform team | ✅ Confirmed |
+| Databricks connector in Business DLP tier | Power Platform Admin Center | Security / Power Platform admin | 🟡 Assumed — verify in PPAC before POC |
 
 #### Why you see two Access Connectors in Azure
 
@@ -492,7 +492,7 @@ SELECT * FROM <prefix>_poc.customers.employees LIMIT 10;
 
 Move the Databricks connector from the blocked list to the **Business** tier in the organisation's DLP policy. This is the single gate for this entire scenario — without it, the connector cannot be used regardless of networking.
 
-**Owner**: Security / CloudX team.
+**Owner**: Security / Power Platform admin team.
 
 Once moved, all Power Apps in the environment can use the connector without individual approvals.
 
@@ -704,7 +704,7 @@ Legend: ✅ already present · ➕ must be added
 
 | Item | Effort | Owner | Blocker? |
 |------|--------|-------|----------|
-| DLP — allowlist Databricks connector | Low — policy change only | Security / CloudX | Yes — nothing works without this |
+| DLP — allowlist Databricks connector | Low — policy change only | Security / Power Platform admin | Yes — nothing works without this |
 | NCC — private endpoint rules for ADLS | Medium — Databricks Accounts API | Databricks / Platform team | Yes — all queries fail without this |
 | DNS — add ADLS dfs/blob zones | Low — ARM/Bicep or portal | Networking team | Yes — storage traffic falls back to public internet |
 | Hub VNet reverse peerings | Low | Networking team | Yes — return traffic fails without this |
@@ -732,5 +732,4 @@ Legend: ✅ already present · ➕ must be added
 | More than 3–4 Power Apps sharing the same warehouse | Scenario C (APIM) — centralises connector config and auth |
 | Other application types need Databricks access (web, mobile, backend) | Scenario C (APIM) — single gateway for all client types |
 | AI Foundry integration required | Scenario C (APIM) — APIM routes to both Databricks and AI Foundry |
-
 

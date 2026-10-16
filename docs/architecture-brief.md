@@ -162,7 +162,7 @@ Legend: ✅ already present · ➕ must be added
 | Private DNS zones — ADLS (dfs + blob) | Without these, storage traffic falls back to public internet | Networking team | **Yes** |
 | Private DNS zone — Key Vault | Required if Key Vault is accessed privately | Networking team | If KV is used |
 | Hub VNet reverse peerings | Return traffic has no route back to Power Platform without this | Networking team | **Yes** |
-| DLP confirmation — Databricks connector in Business tier | Connector cannot be used until confirmed in PPAC | Security / CloudX | **Yes** |
+| DLP confirmation — Databricks connector in Business tier | Connector cannot be used until confirmed in PPAC | Security / Power Platform admin | **Yes** |
 
 ### Security & identity (platform team)
 
@@ -212,5 +212,4 @@ The native connector uses **OAuth 2.0 delegated authentication** — the signed-
 - `SESSION_USER()` returns the real user's UPN — row-level security filters apply without any application code
 
 Each Power Apps user must have a Databricks account provisioned in the workspace.
-
 

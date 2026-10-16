@@ -218,7 +218,7 @@ az provider register --namespace Microsoft.Network
 az provider show --namespace Microsoft.PowerPlatform --query registrationState -o tsv
 ```
 
-> **Access required**: Contributor or Owner on the Azure subscription. In enterprise environments this is typically owned by the CloudX team — raise a request if you don't have access.
+> **Access required**: Contributor or Owner on the Azure subscription. In enterprise environments this is typically owned by the platform team — raise a request if you don't have access.
 > `Microsoft.Network` is usually already registered (creating any VNet requires it), but confirm rather than assume — an unregistered `Microsoft.PowerPlatform` provider was the actual root cause the one time we hit an empty "select policy" dropdown in PPAC, and it gave no direct error pointing at the provider.
 
 ---
@@ -308,7 +308,7 @@ Get-SubnetInjectionStatus -EnvironmentId "<environment-id>"
 
 The Databricks connector must be in the **Business** tier of the organisation's DLP policy before Power Apps can connect to Databricks. This is a gate that must be resolved regardless of networking status.
 
-Work with the CloudX/Security team to move the connector:
+Work with the Security / Power Platform admin team to move the connector:
 
 1. Power Platform Admin Center → **Policies** → **Data policies**
 2. Find the policy that governs the target environment

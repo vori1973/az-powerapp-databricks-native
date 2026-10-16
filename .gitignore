@@ -1,0 +1,19 @@
+# Temporary workspace; keep the directory in Git.
+/tmp/*
+!/tmp/.gitkeep
+
+# Local environment files and tool settings.
+.env
+.env.*
+!.env.example
+!.env.sample
+/.claude/settings.local.json
+
+# Logs, editor backups, and OS metadata.
+*.log
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
